@@ -2,11 +2,13 @@
 
 > 跨产品 Agent 任务接力与委派。额度切换、换工具、换设备时，任务还能接上。
 
-多开 Claude Code、Grok Build、Kimi Code 等工具时，常见情况是：额度用尽、上下文被压缩、要换到另一个产品继续。这时把「目标、关键文件、下一步」收成可验收的 packet，交给另一端续跑或委派执行，比整段粘贴聊天记录更稳、也更短。
+你同时开着 Claude Code、Grok Build、Kimi Code，某天 Claude 额度用完了。以前的做法是复制整段对话粘贴到另一个工具里，上下文一长就丢东西。
 
-本项目的环境适配逻辑参考了 [session-digger](https://github.com/taxueseek/session-digger) 对多产品落盘路径的处理方式，但 **不强制安装 digger**：本机有哪些 Agent、当前工作区对应哪个目录，由内置注册表按本机路径动态解析。换机器、换项目文件夹后，仍按同样方式发现与调用。
+agent-relay 的做法是：把「目标、关键文件、下一步」打包成一个轻量级的任务包，传给另一个工具继续。比复制聊天记录短，也不容易漏信息。
 
-Python 3.8+，零 pip 依赖，clone 即可用。
+环境适配参考了 [session-digger](https://github.com/taxueseek/session-digger) 的多产品路径处理，但 **digger 不是必须装的**：本机有哪些 Agent、当前工作区对应哪个目录，内置注册表会按本机路径自动识别。换机器、换项目文件夹后，重新跑一遍就行。
+
+Python 3.8+，零 pip 依赖。
 
 ---
 
@@ -31,7 +33,7 @@ Python 3.8+，零 pip 依赖，clone 即可用。
 | 典型动作 | `/recall`、建索引、趋势 | `pack` / `resume` / `handoff` / `delegate` |
 | 产物 | 可搜索索引与记忆文件 | `packet.json`、`HANDOFF.md`、`result.json` |
 
-两者可以叠用：装了 digger 时，pack 能多抽一些会话证据；没装时，仍可按 git 状态、内置环境映射和手填 goal 完成交接。
+装了 digger 时，pack 能多抽一些会话证据；没装时，按 git 状态、内置环境映射和手填 goal 也能完成交接。
 
 ---
 
@@ -59,7 +61,7 @@ Claude Code 插件方式：
 git clone https://github.com/taxueseek/agent-relay.git ~/.claude/plugins/agent-relay
 ```
 
-自检：
+安装完成后，跑一下环境检查：
 
 ```bash
 RELAY=~/.agents/skills/agent-relay/scripts/relay_cli.py
@@ -72,7 +74,7 @@ python3 "$RELAY" workspace --project .
 
 ## 环境适配（换设备 / 换工作区）
 
-不同 Agent 在本机的数据目录、项目编码方式各不相同。agent-relay 内置环境注册表，在**当前机器、当前项目路径**上动态解析，不写死某台电脑的绝对路径。
+不同 Agent 在本机的数据目录、项目编码方式各不相同。agent-relay 内置环境注册表，在**当前机器、当前项目路径**上自动识别，不写死某台电脑的绝对路径。
 
 | 环境 | 项目路径如何编码（示意） |
 |------|--------------------------|
@@ -96,8 +98,8 @@ python3 "$RELAY" workspace -p . --json
 
 ## 能做什么
 
-- **证据驱动交接**：瘦包（goal + 关键文件 + 下一步），不 dump 全文 transcript  
-- **pack / resume**：额度切换、压缩后续跑；resume 会检查文件/git 漂移  
+- **任务打包**：把目标、关键文件、下一步打成轻量包，不复制全文对话  
+- **pack / resume**：额度切换后续跑；resume 会检查文件/git 变化  
 - **goal-lint / plan**：先硬化目标、干跑路由，再花 peer 额度  
 - **invoke / handoff / delegate**：真调 Claude、Grok、Kimi Code、MiMo 等  
 - **静默或可见**：默认异步静默；`--visible` 结束后在 Ghostty / Terminal 打开会话  

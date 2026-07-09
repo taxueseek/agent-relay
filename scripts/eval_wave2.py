@@ -35,7 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.paths import (  # noqa: E402
     RELAY_HOME,
     SKILL_ROOT,
-    find_latest_session,
+    discover_sd_root,
+    find_latest_session_info,
     latest_packet_dir,
     portable_file_token_verify,
     project_relay_dir,
@@ -219,20 +220,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    session = find_latest_session(
+    sess_info = find_latest_session_info(
         peer=args.from_peer,
         project=project,
         explicit=args.session or None,
         allow_global_fallback=not args.no_global_session,
+        prefer_digger=False,  # native multi-env; digger optional
     )
+    session = Path(sess_info["path"]) if sess_info else None
 
     meta = {
         "project": str(project),
         "project_slug": project_slug(project),
         "skill_root": str(SKILL_ROOT),
         "relay_home": str(RELAY_HOME),
+        "session_digger": str(discover_sd_root() or ""),
         "from_peer": args.from_peer,
         "session": str(session) if session else None,
+        "session_source": (sess_info or {}).get("source"),
+        "session_peer": (sess_info or {}).get("peer"),
+        "session_id": (sess_info or {}).get("id"),
         "out_dir": str(out_dir),
         "platform": sys.platform,
         "python": sys.executable,
@@ -243,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "ERROR: no session found for this project.\n"
             "  Pass --session PATH, or set AGENT_RELAY_EVAL_SESSION,\n"
-            "  or open a chat under this project so peer stores a session.",
+            "  or open a chat under this project so peer stores a session.\n"
+            "  Discovery is built-in (no session-digger required).",
             file=sys.stderr,
         )
         return 1

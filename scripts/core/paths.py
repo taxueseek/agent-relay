@@ -1,17 +1,23 @@
-"""Path discovery for agent-relay and session-digger."""
+"""Path discovery for agent-relay (standalone; session-digger optional)."""
 
 from __future__ import annotations
 
 import os
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, unquote
+
+from .session_discover import find_sessions as native_find_sessions
+from .session_discover import resolve_latest as native_resolve_latest
+from .session_discover import session_in_project
 
 RELAY_HOME = Path(os.environ.get("AGENT_RELAY_HOME", Path.home() / ".agents" / "relay")).expanduser()
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 
 
 def discover_sd_root() -> Path | None:
+    """Optional session-digger root (evidence extraction only; discovery is native)."""
     env = os.environ.get("SESSION_DIGGER_ROOT") or os.environ.get("SD_ROOT")
     if env:
         p = Path(env).expanduser()
@@ -58,8 +64,6 @@ def project_relay_dir(project: Path | None = None) -> Path:
     return (project or Path.cwd()).resolve() / ".relay"
 
 
-# --- peer session roots & project-scoped discovery (portable) ---
-
 def peer_session_roots(peer: str) -> list[Path]:
     """Known session root directories per peer (home-relative, OS-agnostic)."""
     home = Path.home()
@@ -72,7 +76,7 @@ def peer_session_roots(peer: str) -> list[Path]:
         "codex": [home / ".codex" / "sessions", home / ".codex"],
         "zcode": [home / ".zcode" / "cli" / "agents", home / ".zcode"],
     }
-    return [p for p in mapping.get(peer, []) if True]
+    return list(mapping.get(peer, []))
 
 
 def grok_project_keys(cwd: Path) -> list[str]:
@@ -83,7 +87,6 @@ def grok_project_keys(cwd: Path) -> list[str]:
         k = quote(raw, safe="")
         if k not in keys:
             keys.append(k)
-    # Windows drive letter variants if present
     s = str(cwd)
     if len(s) >= 2 and s[1] == ":":
         alt = s.replace("\\", "/")
@@ -96,11 +99,8 @@ def grok_project_keys(cwd: Path) -> list[str]:
 def claude_project_keys(cwd: Path) -> list[str]:
     """Claude project dir name variants under ~/.claude/projects/."""
     cwd = cwd.resolve()
-    s = str(cwd)
-    posix = cwd.as_posix()
     keys: list[str] = []
-    for raw in (s, posix):
-        # typical: -Users-foo-project
+    for raw in (str(cwd), cwd.as_posix()):
         stripped = raw.lstrip("/").replace("\\", "/").lstrip("/")
         enc = "-" + stripped.replace("/", "-").replace(":", "")
         if enc not in keys:
@@ -118,67 +118,54 @@ def _newest(paths: list[Path]) -> Path | None:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
-def _path_matches_project(path: Path, project: Path) -> bool:
-    """Best-effort: does this session path belong to project?"""
-    project = project.resolve()
-    ps = str(path)
-    proj_s = str(project)
-    proj_posix = project.as_posix()
-    name = project.name
-    if proj_s in ps or proj_posix in ps:
-        return True
-    try:
-        decoded_parts = [unquote(part) for part in path.parts]
-        joined = "/".join(decoded_parts)
-        if proj_s in joined or proj_posix in joined or name in joined:
-            # stronger: resolve decoded dir if looks absolute
-            for part in decoded_parts:
-                if not part or part in (path.anchor, "/"):
-                    continue
-                if part.startswith("/") or (len(part) >= 2 and part[1] == ":"):
-                    try:
-                        if Path(part).resolve() == project:
-                            return True
-                    except OSError:
-                        pass
-            if quote(proj_s, safe="") in ps or quote(proj_posix, safe="") in ps:
-                return True
-            if name and name in ps:
-                return True
-    except Exception:
-        pass
-    return name in ps
-
-
-def find_latest_session(
+def find_latest_session_info(
     peer: str = "grok",
     project: Path | None = None,
     explicit: str | Path | None = None,
     *,
     allow_global_fallback: bool = True,
-) -> Path | None:
-    """Locate a session transcript for packing, scoped to a project when possible.
+    prefer_digger: bool = False,
+) -> dict[str, Any] | None:
+    """Locate a session transcript; return {path, source, peer, id} or None.
 
-    Resolution order:
-      1. explicit path (arg)
-      2. AGENT_RELAY_EVAL_SESSION / GROK_SESSION / CLAUDE_SESSION env
-      3. peer store filtered by project encoding (Grok URL-encode / Claude dash-encode)
-      4. peer store fuzzy match on project path/name
-      5. optional global newest transcript (if allow_global_fallback)
+    Resolution order (standalone by default):
+      1. explicit path
+      2. env overrides
+      3. **native multi-env discovery** (digger-inspired, no digger install)
+      4. optional session-digger if prefer_digger=True and installed
     """
     if explicit:
         p = Path(str(explicit)).expanduser()
         if p.is_file():
-            return p.resolve()
+            return {
+                "path": p.resolve(),
+                "source": "explicit",
+                "peer": peer,
+                "id": p.stem,
+            }
         if p.is_dir():
-            for name in ("chat_history.jsonl", "wire.jsonl"):
+            for name in ("chat_history.jsonl", "wire.jsonl", "transcript.jsonl"):
                 hit = p / name
                 if hit.is_file():
-                    return hit.resolve()
-            nested = list(p.rglob("chat_history.jsonl")) + list(p.rglob("wire.jsonl"))
+                    return {
+                        "path": hit.resolve(),
+                        "source": "explicit",
+                        "peer": peer,
+                        "id": p.name,
+                    }
+            nested = (
+                list(p.rglob("chat_history.jsonl"))
+                + list(p.rglob("wire.jsonl"))
+                + list(p.rglob("transcript.jsonl"))
+            )
             hit = _newest(nested)
             if hit:
-                return hit.resolve()
+                return {
+                    "path": hit.resolve(),
+                    "source": "explicit",
+                    "peer": peer,
+                    "id": hit.parent.name,
+                }
         return None
 
     peer_l = (peer or "grok").lower().strip()
@@ -195,72 +182,79 @@ def find_latest_session(
     for key in env_keys:
         val = (os.environ.get(key) or "").strip()
         if val:
-            found = find_latest_session(peer, project, val, allow_global_fallback=False)
+            found = find_latest_session_info(
+                peer, project, val, allow_global_fallback=False, prefer_digger=False
+            )
             if found:
+                found["source"] = f"env:{key}"
                 return found
 
     project = (project or Path.cwd()).resolve()
-    cands: list[Path] = []
 
-    if peer_l == "grok":
-        for root in peer_session_roots("grok"):
-            if not root.is_dir():
-                continue
-            for key in grok_project_keys(project):
-                proj_dir = root / key
-                if proj_dir.is_dir():
-                    cands.extend(proj_dir.glob("*/chat_history.jsonl"))
-            if not cands:
-                for d in root.iterdir():
-                    if not d.is_dir():
-                        continue
-                    if _path_matches_project(d, project):
-                        cands.extend(d.glob("*/chat_history.jsonl"))
-            if not cands and allow_global_fallback:
-                cands.extend(root.glob("*/**/chat_history.jsonl"))
+    # --- native (primary): digger-inspired, no install required ---
+    native = native_resolve_latest(
+        peer_l,
+        project=project,
+        allow_global_fallback=allow_global_fallback,
+    )
+    if native:
+        return native
 
-    elif peer_l == "claude":
-        for root in peer_session_roots("claude"):
-            if not root.is_dir():
-                continue
-            for key in claude_project_keys(project):
-                proj_dir = root / key
-                if proj_dir.is_dir():
-                    cands.extend(proj_dir.glob("*.jsonl"))
-            if not cands:
-                for d in root.iterdir():
-                    if d.is_dir() and _path_matches_project(d, project):
-                        cands.extend(d.glob("*.jsonl"))
-            if not cands and allow_global_fallback:
-                cands.extend(root.glob("*/*.jsonl"))
-                cands.extend(root.glob("*.jsonl"))
+    # --- optional digger (only if asked + installed) ---
+    if prefer_digger and discover_sd_root() is not None:
+        try:
+            from .evidence import list_sessions  # type: ignore
 
-    elif peer_l in ("kimi", "kimi_code"):
-        for root in peer_session_roots("kimi_code"):
-            if not root.is_dir():
-                continue
-            # wire.jsonl under session_*/agents/main/
-            wires = list(root.glob("**/wire.jsonl"))
-            scoped = [w for w in wires if _path_matches_project(w, project)]
-            cands.extend(scoped or (wires if allow_global_fallback else []))
+            digger_peer = "cross" if peer_l in ("auto",) else peer_l
+            rows = list_sessions(
+                digger_peer,
+                limit=5,
+                scope="current",
+                cwd=project,
+                prefer_native=False,
+            )
+            if rows:
+                row = rows[0]
+                path = Path(row["path"])
+                if path.is_file():
+                    agent = (row.get("agent") or peer_l).lower()
+                    if agent == "kimi":
+                        agent = "kimi_code"
+                    return {
+                        "path": path.resolve(),
+                        "source": row.get("source") or "session-digger",
+                        "peer": agent,
+                        "id": row.get("id") or path.stem,
+                    }
+        except Exception:
+            pass
 
-    else:
-        # generic: any chat_history / jsonl under peer roots
-        for root in peer_session_roots(peer_l):
-            if not root.is_dir():
-                continue
-            found = list(root.rglob("chat_history.jsonl")) + list(root.rglob("wire.jsonl"))
-            scoped = [f for f in found if _path_matches_project(f, project)]
-            cands.extend(scoped or (found if allow_global_fallback else []))
+    return None
 
-    return _newest(cands)
+
+def find_latest_session(
+    peer: str = "grok",
+    project: Path | None = None,
+    explicit: str | Path | None = None,
+    *,
+    allow_global_fallback: bool = True,
+    prefer_digger: bool = False,
+) -> Path | None:
+    """Locate a session transcript path (see find_latest_session_info)."""
+    info = find_latest_session_info(
+        peer,
+        project,
+        explicit,
+        allow_global_fallback=allow_global_fallback,
+        prefer_digger=prefer_digger,
+    )
+    if not info:
+        return None
+    return Path(info["path"])
 
 
 def portable_file_token_verify(path: Path | str, token: str) -> str:
-    """Shell-safe VERIFY command using the current Python — works on macOS/Linux/Windows.
-
-    Prefer this over `test -f && rg -q` which needs Unix + ripgrep.
-    """
+    """Shell-safe VERIFY command using the current Python — works on macOS/Linux/Windows."""
     import json
     import sys
 
@@ -272,3 +266,23 @@ def portable_file_token_verify(path: Path | str, token: str) -> str:
         f"raise SystemExit(0 if p.is_file() and {json.dumps(token)} in t else 1)"
     )
     return f"{sys.executable} -c {json.dumps(code)}"
+
+
+# re-export for callers / tests
+__all__ = [
+    "RELAY_HOME",
+    "SKILL_ROOT",
+    "discover_sd_root",
+    "project_slug",
+    "packet_dir",
+    "latest_packet_dir",
+    "project_relay_dir",
+    "peer_session_roots",
+    "grok_project_keys",
+    "claude_project_keys",
+    "find_latest_session",
+    "find_latest_session_info",
+    "portable_file_token_verify",
+    "native_find_sessions",
+    "session_in_project",
+]

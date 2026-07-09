@@ -4,7 +4,7 @@ description: |
   跨产品 Agent 任务接力、委派与协作。额度切换、压缩续跑、子代理调用（Claude Code / Grok Build / Kimi Code / Codex 等）。
   触发：接力、交接、handoff、delegate、委派、resume、接着做、额度没了、换环境继续、跨 Agent、子代理、bridge、启动协作、pack 会话、goal-lint、先 plan。
   不负责：会话分析本体（用 session-digger）、在线多 Agent 通信（CommHub）、Codex 舰队编排（用 codex-workflows）。
-version: 0.1.2
+version: 0.1.3
 ---
 
 # agent-relay
@@ -16,7 +16,9 @@ version: 0.1.2
 ```bash
 RELAY=~/.agents/skills/agent-relay/scripts/relay_cli.py
 python3 "$RELAY" peers
-python3 "$RELAY" doctor
+python3 "$RELAY" envs                         # 本机有哪些 Agent 环境
+python3 "$RELAY" workspace --project /path    # 任意工作区 → 各环境落盘目录
+python3 "$RELAY" doctor                       # 含 workspace map
 python3 "$RELAY" init
 # 信任闭环前半：硬化目标 + 干跑（不花 peer token）
 python3 "$RELAY" goal-lint --goal "…" [--verify-cmd '…']
@@ -32,9 +34,15 @@ python3 "$RELAY" handoff --to claude --goal "… VERIFY: test -f path && rg -q T
 python3 "$RELAY" delegate --to claude --task "写文件 X 内容 Y VERIFY: test -f X && rg -q Y X" [--mode implement|review|fix] [--strict-goal] [--visible]
 # goal 建议带 VERIFY: 可脚本验收；结束后读 result.json 一屏回执
 # 可见终端默认 Ghostty；zcode 无 CLI invoke
+# 评估（按项目 cwd 探测会话；无硬编码用户路径；mac/linux/win）：
+#   python3 scripts/eval_wave2.py --project . --dry-run
+#   python3 scripts/eval_wave2.py --session "$GROK_SESSION" --to claude
 ```
 
-依赖：`~/.agents/skills/session-digger`（可用 `SESSION_DIGGER_ROOT` 覆盖）。
+**产品目的**：跨产品任务接力/委派——换设备、换工作区、额度切换，任务仍能接上。  
+链路：`workspace` 发现本机各 Agent 落盘 → `pack` 按当前项目自动绑会话 → `invoke`/`handoff` 静默或 `--visible` 调用 → `VERIFY`。  
+环境适配内置（`core/env_map.py`，不装 digger 也能用）；路径按本机 `~` 与项目路径动态编码。  
+E2E：`python3 scripts/e2e_collab.py --project .`
 
 ## 信任闭环（借鉴 codex-workflows，落地为 relay 形态）
 

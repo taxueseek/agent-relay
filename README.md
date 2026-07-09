@@ -1,9 +1,25 @@
 # agent-relay
 
-> 跨产品 Agent 任务接力与委派。用科学的方式来交接任务和上下文，而不是粘贴整段聊天记录。
+> 跨产品 Agent 任务接力与委派。额度切换、换工具、换设备时，任务还能接上。
 
-额度用完、上下文压扁、换工具继续时，把「目标 + 关键文件 + 下一步」打成可验收的数据，交给另一个 Agent 续跑或委派执行。灵感来自 [session-digger](https://github.com/taxueseek/session-digger) 的跨环境会话分析，本技能更进一步。可以进行跨agent的任务接力跟调用其他的agent来打下手。
+多开 Claude Code、Grok Build、Kimi Code 等工具时，常见情况是：额度用尽、上下文被压缩、要换到另一个产品继续。这时把「目标、关键文件、下一步」收成可验收的 packet，交给另一端续跑或委派执行，比整段粘贴聊天记录更稳、也更短。
 
+本项目的环境适配逻辑参考了 [session-digger](https://github.com/taxueseek/session-digger) 对多产品落盘路径的处理方式，但 **不强制安装 digger**：本机有哪些 Agent、当前工作区对应哪个目录，由内置注册表按本机路径动态解析。换机器、换项目文件夹后，仍按同样方式发现与调用。
+
+Python 3.8+，零 pip 依赖，clone 即可用。
+
+---
+
+## 它解决什么问题
+
+| 场景 | 做法 |
+|------|------|
+| 当前产品额度不够了 | `pack` 打交接包，另一产品 `resume` 或 `handoff` |
+| 想让子代理去改代码 / 做审查 | `delegate` / `invoke`，goal 带 `VERIFY` |
+| 换了电脑或项目路径 | `envs` + `workspace` 重新绑定本机环境与工作区 |
+| 希望有人看着跑，或完全后台跑 | `handoff --visible` 打开终端，或不加则静默异步 |
+
+**不做的事**：会话考古与知识沉淀（交给 session-digger）；Codex 舰队级编排（交给专门编排工具）。
 
 ---
 
@@ -11,63 +27,82 @@
 
 | | [session-digger](https://github.com/taxueseek/session-digger) | **agent-relay** |
 |--|--|--|
-| 解决什么 | 历史会话怎么挖、怎么搜、怎么沉淀 | 任务怎么跨产品接上、怎么委派、怎么验收 |
-| 典型动作 | `/recall`、索引、趋势 | `pack` / `resume` / `handoff` / `delegate` |
-| 产物 | 可搜索索引与记忆 | `packet.json` + `HANDOFF.md` + `result.json` |
+| 定位 | 跨环境会话挖掘、检索、记忆 | 跨产品任务交接与委派 |
+| 典型动作 | `/recall`、建索引、趋势 | `pack` / `resume` / `handoff` / `delegate` |
+| 产物 | 可搜索索引与记忆文件 | `packet.json`、`HANDOFF.md`、`result.json` |
 
-两者叠用：有 digger 时 pack 会拉会话证据；没有 digger 时降级为 git 状态 + 手填 goal，仍可交接。
+两者可以叠用：装了 digger 时，pack 能多抽一些会话证据；没装时，仍可按 git 状态、内置环境映射和手填 goal 完成交接。
 
 ---
 
-## 如何安装
-
-### 通用安装（推荐）
+## 安装
 
 ```bash
-# 方式一：npx 一键安装
+# 推荐：skills 一键安装
 npx -y skills add taxueseek/agent-relay -g --all
 
-# 方式二：git clone 到 skills 目录
+# 或 clone 到 skills 目录
 git clone https://github.com/taxueseek/agent-relay.git ~/.agents/skills/agent-relay
 ```
 
-可选依赖（增强 pack 证据）：
+可选（增强证据抽取，非必须）：
 
 ```bash
-# 安装 session-digger 后，relay 会自动探测
 npx -y skills add taxueseek/session-digger -g --all
-# 或指定路径
+# 或
 export SESSION_DIGGER_ROOT=~/.agents/skills/session-digger
 ```
 
-### Claude Code 插件安装
+Claude Code 插件方式：
 
 ```bash
 git clone https://github.com/taxueseek/agent-relay.git ~/.claude/plugins/agent-relay
 ```
 
-装完可用 skill 触发词：接力、handoff、delegate、resume、pack、goal-lint 等。
-
-### 自检
+自检：
 
 ```bash
 RELAY=~/.agents/skills/agent-relay/scripts/relay_cli.py
-# clone 到其他路径时改 RELAY
 python3 "$RELAY" doctor
-python3 "$RELAY" peers
+python3 "$RELAY" envs
+python3 "$RELAY" workspace --project .
 ```
+
+---
+
+## 环境适配（换设备 / 换工作区）
+
+不同 Agent 在本机的数据目录、项目编码方式各不相同。agent-relay 内置环境注册表，在**当前机器、当前项目路径**上动态解析，不写死某台电脑的绝对路径。
+
+| 环境 | 项目路径如何编码（示意） |
+|------|--------------------------|
+| Claude Code | dash：`/Users/a/app` → `-Users-a-app` |
+| Grok Build | URL-encode 项目绝对路径 |
+| Kimi Code | 项目名 / hash 目录匹配 |
+| Codex / ZCode 等 | 尽力扫描 + 路径片段匹配 |
+
+```bash
+# 本机装了哪些 Agent、数据根目录在哪
+python3 "$RELAY" envs
+
+# 任意项目文件夹 → 各环境落盘绑定
+python3 "$RELAY" workspace --project /path/to/your/repo
+python3 "$RELAY" workspace -p . --json
+```
+
+换设备后：装好对应 CLI 与 skill，在目标仓库执行 `workspace` / `doctor` 即可重新对齐，无需改脚本里的路径。
 
 ---
 
 ## 能做什么
 
-- **证据驱动交接** — 从 session-digger / git 组装瘦包，不 dump 全文 transcript
-- **pack / resume** — 额度切换、压缩后续跑；resume 校验 mtime/git 漂移（STALE）
-- **goal-lint / plan** — 先把目标硬化、干跑路由与风险，再花 peer token
-- **invoke / handoff / delegate** — 真调 Claude Code、Grok Build、Kimi Code、MiMo 等
-- **bridge / suggest** — 跨环境对齐进度；推荐 peer 与协作模式卡片
-- **VERIFY + result.json** — goal 可带可脚本验收命令，委派结束一屏回执
-- **可见终端** — `--visible` 结束后在 Ghostty / Terminal 中 resume 会话
+- **证据驱动交接**：瘦包（goal + 关键文件 + 下一步），不 dump 全文 transcript  
+- **pack / resume**：额度切换、压缩后续跑；resume 会检查文件/git 漂移  
+- **goal-lint / plan**：先硬化目标、干跑路由，再花 peer 额度  
+- **invoke / handoff / delegate**：真调 Claude、Grok、Kimi Code、MiMo 等  
+- **静默或可见**：默认异步静默；`--visible` 结束后在 Ghostty / Terminal 打开会话  
+- **VERIFY + result.json**：goal 内可写验收命令，结束一屏回执  
+- **bridge / suggest**：跨环境对齐进度；推荐 peer 与协作模式  
 
 ---
 
@@ -76,66 +111,66 @@ python3 "$RELAY" peers
 ```bash
 RELAY=~/.agents/skills/agent-relay/scripts/relay_cli.py
 
-# 1. 环境是否就绪
-python3 "$RELAY" doctor
+# 本机环境 + 当前工作区绑定
+python3 "$RELAY" envs
+python3 "$RELAY" workspace --project .
 python3 "$RELAY" peers
 
-# 2. 模糊目标先硬化
+# 模糊目标先硬化
 python3 "$RELAY" goal-lint --goal "修登录超时 VERIFY: pytest -q tests/test_auth.py"
 
-# 3. 零 token 干跑路由
+# 零 token 干跑
 python3 "$RELAY" plan --task "修登录超时" --to claude --action delegate
 
-# 4. 打包当前会话（额度快没了 / 准备换工具）
+# 打包当前会话（准备换工具）
 python3 "$RELAY" pack --from auto --goal "继续修登录超时"
 
-# 5. 在另一产品里续跑
+# 另一产品续跑
 python3 "$RELAY" resume latest
 
-# 6. 委派子代理执行（建议 goal 带 VERIFY）
-python3 "$RELAY" delegate --to claude \
-  --task "写 tests/test_relay_smoke.py 含 test_ok。VERIFY: test -f tests/test_relay_smoke.py && rg -q test_ok tests/test_relay_smoke.py"
+# 静默委派（后台异步）
+python3 "$RELAY" handoff --to grok --goal "写 tests/smoke.md 含 OK VERIFY: test -f tests/smoke.md"
 
-# 7. 查 job 状态
+# 可见协作（打开终端窗口）
+python3 "$RELAY" handoff --to kimi_code --visible --goal "审查 src/ 列 3 条建议"
+
+# 查 job
 python3 "$RELAY" job-status --packet latest
 ```
 
-信任闭环（推荐）：
+推荐闭环：
 
+```text
+workspace / peers → goal-lint → plan → pack 或 handoff → job-status / VERIFY
 ```
-goal-lint → plan → pack/delegate → job-status / VERIFY
+
+端到端自测（静默 + 可见各跑一轮）：
+
+```bash
+python3 ~/.agents/skills/agent-relay/scripts/e2e_collab.py --project .
 ```
 
 ---
 
-## 命令参考
+## 命令一览
 
 | 命令 | 用途 |
 |------|------|
-| `peers` | 列出可探测 peer 与能力（证据 / pack / 委派） |
-| `doctor` | 环境与依赖自检 |
-| `init` | 初始化项目 `.relay/` 指针 |
-| `goal-lint` | 硬化目标：VERIFY、sandbox、规模、失败条件 |
+| `envs` | 扫描本机 Agent 环境与数据根目录 |
+| `workspace` | 将某项目路径映射到各环境的落盘目录 |
+| `peers` | 探测可 pack / 可委派的 peer |
+| `doctor` | 健康检查（含当前工作区映射） |
+| `init` | 初始化项目 `.relay/` |
+| `goal-lint` | 硬化目标与验收条件 |
 | `plan` | 干跑路由与风险，不花 peer token |
-| `pack` | 打证据包；可选 `--lint-goal`、`--deep` |
-| `resume` | 加载 packet / HANDOFF，注入后先读 primary 文件 |
-| `bridge` | 按关键词跨环境对齐进度 |
-| `suggest` | 推荐 peer + harness 模式卡片 |
-| `invoke` | 直接调用另一产品继续（`--wait` / `--visible`） |
-| `handoff` | pack + invoke 一键交接 |
+| `pack` | 打证据包 |
+| `resume` | 加载 packet / HANDOFF |
+| `bridge` | 按关键词跨环境对齐 |
+| `suggest` | 推荐 peer 与协作模式 |
+| `invoke` | 直接调用另一产品（`--wait` / `--visible`） |
+| `handoff` | pack + invoke |
 | `delegate` | 主管式委派：implement / review / fix |
-| `job-status` | 查询异步 job：running / completed / stopped / idle |
-
-### 常见场景
-
-| 你想… | 命令 |
-|--------|------|
-| 目标太糊 | `goal-lint --goal "…"` |
-| 先估风险再花钱 | `plan --task "…"` |
-| 额度没了 / 换环境 | `pack` → 另一边 `resume latest` |
-| 交给子代理干活 | `delegate --to <peer> --task "… VERIFY: …"` |
-| 打开可见窗口续聊 | `handoff --to grok --visible --goal "…"` |
-| 两边各说各话 | `bridge <关键词>` |
+| `job-status` | 异步 job 状态：running / completed / stopped / idle |
 
 ---
 
@@ -146,28 +181,28 @@ goal-lint → plan → pack/delegate → job-status / VERIFY
 | Claude Code | ✓ | ✓ | 一等 peer |
 | Grok Build | ✓ | ✓ | 一等 peer |
 | Kimi Code | ✓ | ✓ | 有 CLI 即可 |
-| MiMo | ✓ | ✓ | `mimo run`；模型见 `AGENT_RELAY_MIMO_MODEL` |
+| MiMo | ✓ | ✓ | `mimo run` |
 | Codex | ✓ | ✓* | 探测到 CLI 时可用 |
 | ZCode | ✓ | 默认关 | 仅 pack/resume；实验：`AGENT_RELAY_ENABLE_ZCODE_INVOKE=1` |
 
-\* 复杂 Codex 舰队 / sessionful race 请用专门的 codex 编排工具，本 skill 不做第二套编排层。
+\* 复杂 Codex 舰队编排请用专用工具，本 skill 不做第二套编排层。
 
 ---
 
-## 产物结构
+## 产物
 
-```
+```text
 ~/.agents/relay/<project-slug>/<packet-id>/
-  packet.json      # 结构化瘦包
-  HANDOFF.md       # 人/机可读交接
-  sources.json     # 证据来源
-  result.json      # 委派回执（若有）
-  invoke/          # 调用日志与 job 状态
+  packet.json
+  HANDOFF.md
+  sources.json
+  result.json      # 委派回执
+  invoke/          # job 与日志
 
-<project>/.relay/CURRENT.md   # 当前 packet 指针
+<project>/.relay/CURRENT.md
 ```
 
-Schema：`agent-relay/v1`。packet 默认短预算（goal + next + 有限 files/decisions），避免 token 膨胀。
+Schema：`agent-relay/v1`。packet 默认短预算，避免 token 膨胀。
 
 ---
 
@@ -175,23 +210,12 @@ Schema：`agent-relay/v1`。packet 默认短预算（goal + next + 有限 files/
 
 | 变量 | 作用 |
 |------|------|
-| `SESSION_DIGGER_ROOT` / `SD_ROOT` | session-digger 安装路径 |
+| `SESSION_DIGGER_ROOT` / `SD_ROOT` | session-digger 路径（可选增强） |
 | `AGENT_RELAY_HOME` | packet 存储根，默认 `~/.agents/relay` |
 | `AGENT_RELAY_TERMINAL` | 可见终端：`Ghostty` / `Terminal` 等 |
 | `AGENT_RELAY_MIMO_MODEL` | MiMo 模型名 |
 | `AGENT_RELAY_ENABLE_ZCODE_INVOKE` | 实验性打开 ZCode invoke |
-
----
-
-## 模式卡片（`suggest` 会提示）
-
-| id | 防什么 |
-|----|--------|
-| `trust_loop` | 糊目标 + 无验收 |
-| `fresh_context_review` | 作者审自己 |
-| `quota_handoff` | 上下文丢失 |
-| `cross_peer_align` | 多端各说各话 |
-| `anti_overbuild` | 小任务开舰队 |
+| `AGENT_RELAY_EVAL_SESSION` | eval / 调试时指定会话文件 |
 
 ---
 
@@ -199,32 +223,38 @@ Schema：`agent-relay/v1`。packet 默认短预算（goal + next + 有限 files/
 
 ```bash
 cd agent-relay
-python3 -m pytest tests/ -q
-# 或
 python3 tests/test_packet_and_peers.py
+python3 scripts/e2e_collab.py --project /path/to/repo
+python3 scripts/eval_wave2.py --project . --dry-run
 ```
 
-更多：`docs/PLAN.md`（架构与阶段）、`references/packet-schema.md`（包字段）、`SKILL.md`（Agent 触发与纪律）。
+更多：`docs/PLAN.md`、`references/packet-schema.md`、`SKILL.md`。
 
 ---
 
 ## 版本
 
+### v0.1.3
+
+- 内置环境适配（`env_map`）：`envs` / `workspace`，换设备与工作区可重新绑定  
+- 会话发现默认走原生多环境映射，session-digger 改为可选增强  
+- 静默与可见协作 E2E（`e2e_collab.py`）  
+- 跨平台 VERIFY 辅助、doctor 展示工作区映射  
+
 ### v0.1.2
 
-- 信任闭环：`goal-lint` → `plan` → pack/delegate → `job-status` / VERIFY
-- L2 真调：claude / grok / kimi_code / mimo；async + lean 默认
-- 模式卡片、`job-status` 归一化状态
-- 对接 session-digger 证据层；无 digger 可降级
+- 信任闭环：goal-lint → plan → pack/delegate → job-status / VERIFY  
+- L2 真调：claude / grok / kimi_code / mimo；async + lean  
+- 模式卡片与 job 状态归一化  
 
 ---
 
-## DO NOT
+## 使用注意
 
-- 不替代 session-digger 的会话分析
-- 不做在线多 Agent 消息总线（L3 延期）
-- 不把密钥写入 packet
-- 两行 typo 不要开多 peer 舰队
+- 勿把密钥写入 packet  
+- 小改动不要开多 peer 舰队  
+- 可见模式依赖本机终端（默认 Ghostty，可改 `AGENT_RELAY_TERMINAL`）  
+- 换设备后请先 `envs` + `workspace`，确认 CLI 与数据目录再 `handoff`  
 
 ## License
 

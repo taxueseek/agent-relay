@@ -3,13 +3,15 @@
 
 Usage:
   relay_cli.py peers
+  relay_cli.py envs                          # machine-wide agent env scan
+  relay_cli.py workspace [--project DIR]     # map any folder → each env's data dirs
   relay_cli.py pack [--from PEER] [--to PEER] [--session PATH] [--goal TEXT] [--budget short|medium]
   relay_cli.py resume [packet-id|latest]
   relay_cli.py bridge KEYWORD [--limit N] [--to PEER]
   relay_cli.py suggest [--task TEXT]
   relay_cli.py invoke --to PEER [--packet ID|latest] [--mode continue|review|implement|fix]
   relay_cli.py handoff --to PEER [--goal TEXT] [--mode …]   # pack then invoke
-  relay_cli.py doctor
+  relay_cli.py doctor [--cwd DIR]
   relay_cli.py init [--project DIR]
 """
 
@@ -427,16 +429,25 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_doctor(_args: argparse.Namespace) -> int:
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from core.env_map import format_workspace_map, map_workspace, scan_environments
+
     sd = discover_sd_root()
+    cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve()
     print("=== agent-relay doctor ===")
     print(f"skill_root: {SKILL_ROOT}")
     print(f"relay_home: {RELAY_HOME} exists={RELAY_HOME.exists()}")
-    print(f"session-digger: {sd or 'MISSING'}")
+    print(f"workspace: {cwd}")
+    print(f"session-digger: {sd or 'optional (not installed)'}")
     digger = digger_env_ids()
-    print(f"digger envs: {digger}")
+    if digger:
+        print(f"digger envs: {digger}")
     print()
-    cmd_peers(_args)
+    # environment ↔ this workspace (standalone, digger-inspired)
+    print("--- workspace → agent env map (native) ---")
+    print(format_workspace_map(map_workspace(cwd)))
+    print()
+    cmd_peers(args)
     print()
     # recent packets
     if RELAY_HOME.is_dir():
@@ -466,7 +477,35 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             )
         else:
             print(f"  invoke {peer}: {b or 'NOT ON PATH'}")
-    return 0 if sd else 2
+    # standalone health: skill + at least one env present on machine
+    envs = scan_environments()
+    any_env = any(e.present for e in envs)
+    return 0 if any_env else 1
+
+
+def cmd_envs(args: argparse.Namespace) -> int:
+    """List agent environments on this machine (no digger required)."""
+    from core.env_map import format_env_scan, scan_environments
+
+    rows = scan_environments()
+    if getattr(args, "json", False):
+        print(json.dumps([r.to_dict() for r in rows], ensure_ascii=False, indent=2))
+    else:
+        print(format_env_scan(rows))
+    return 0
+
+
+def cmd_workspace(args: argparse.Namespace) -> int:
+    """Map a project/workspace folder onto each agent env's storage layout."""
+    from core.env_map import format_workspace_map, map_workspace
+
+    project = Path(args.project).expanduser().resolve() if getattr(args, "project", None) else Path.cwd()
+    report = map_workspace(project)
+    if getattr(args, "json", False):
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(format_workspace_map(report))
+    return 0 if report.get("bound_count", 0) >= 0 else 1
 
 
 def cmd_invoke(args: argparse.Namespace) -> int:
@@ -862,7 +901,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("peers", help="Probe local agent products")
-    sub.add_parser("doctor", help="Health check")
+    p_doc = sub.add_parser("doctor", help="Health check + workspace env map")
+    p_doc.add_argument("--cwd", default=None, help="workspace to map (default: cwd)")
+
+    p_envs = sub.add_parser(
+        "envs",
+        help="Scan agent environments on this machine (standalone, digger-inspired)",
+    )
+    p_envs.add_argument("--json", action="store_true")
+
+    p_ws = sub.add_parser(
+        "workspace",
+        help="Map a project folder → each env's data dirs (any workspace path)",
+    )
+    p_ws.add_argument(
+        "--project",
+        "-p",
+        default=None,
+        help="project/workspace path (default: cwd)",
+    )
+    p_ws.add_argument("--json", action="store_true")
 
     p_pack = sub.add_parser("pack", help="Pack session into handoff packet")
     p_pack.add_argument("--from", dest="from_peer", default="auto", help="source peer or auto")
@@ -1020,6 +1078,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     dispatch = {
         "peers": cmd_peers,
+        "envs": cmd_envs,
+        "workspace": cmd_workspace,
         "pack": cmd_pack,
         "resume": cmd_resume,
         "bridge": cmd_bridge,

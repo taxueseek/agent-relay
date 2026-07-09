@@ -31,7 +31,7 @@ L4 Surface    SKILL.md + 未来 plugin 皮
 ## 1. 目录（skill 即未来插件根）
 
 ```
-agent-relay/
+~/.agents/skills/agent-relay/
   docs/PLAN.md
   SKILL.md
   scripts/relay_cli.py
@@ -82,7 +82,7 @@ agent-relay/
 
 | 核查项 | 结果 | 备注 |
 |--------|------|------|
-| P0-1 目录 | PASS | `agent-relay/` |
+| P0-1 目录 | PASS | `~/.agents/skills/agent-relay/` |
 | P0-2 schema | PASS | unittest validate_packet |
 | P0-3 peers | PASS | claude/grok/zcode 均 present=Y |
 | P0-4 --help | PASS | 子命令齐全 |
@@ -134,7 +134,7 @@ relay suggest [--task]
 入口：
 
 ```bash
-python3 agent-relay/scripts/relay_cli.py <cmd>
+python3 ~/.agents/skills/agent-relay/scripts/relay_cli.py <cmd>
 ```
 
 ---

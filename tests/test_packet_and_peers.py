@@ -187,41 +187,97 @@ class TestPathsSessionDiscovery(unittest.TestCase):
             decoded = unquote(keys[0])
             self.assertIn("MyProject", decoded)
 
-    def test_find_latest_session_scoped(self):
-        from core.paths import find_latest_session, grok_project_keys
+    def test_native_scoped_without_digger(self):
+        """Full multi-env layout under fake HOME; digger forced absent."""
+        from core.session_discover import find_sessions, resolve_latest
+        from core.paths import find_latest_session_info, grok_project_keys, claude_project_keys
+        from urllib.parse import quote
         from unittest import mock
+        import time as _t
 
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "home"
             project = Path(td) / "work" / "app"
-            project.mkdir(parents=True)
             other = Path(td) / "work" / "other"
+            project.mkdir(parents=True)
             other.mkdir(parents=True)
 
-            base = home / ".grok" / "sessions"
-            key_proj = grok_project_keys(project)[0]
-            key_other = grok_project_keys(other)[0]
-            (base / key_proj / "sess-a").mkdir(parents=True)
-            (base / key_other / "sess-b").mkdir(parents=True)
-            target = base / key_proj / "sess-a" / "chat_history.jsonl"
-            noise = base / key_other / "sess-b" / "chat_history.jsonl"
-            target.write_text('{"x":1}\n', encoding="utf-8")
-            noise.write_text('{"x":2}\n', encoding="utf-8")
-            # make noise newer — scoped lookup must still pick project
-            import time as _t
+            # Grok layout
+            gkey = quote(str(project.resolve()), safe="")
+            gkey_o = quote(str(other.resolve()), safe="")
+            g_target = home / ".grok" / "sessions" / gkey / "sess-a" / "chat_history.jsonl"
+            g_noise = home / ".grok" / "sessions" / gkey_o / "sess-b" / "chat_history.jsonl"
+            g_target.parent.mkdir(parents=True)
+            g_noise.parent.mkdir(parents=True)
+            g_target.write_text('{"g":1}\n', encoding="utf-8")
+            g_noise.write_text('{"g":2}\n', encoding="utf-8")
+            _t.sleep(0.02)
+            g_noise.write_text('{"g":3}\n', encoding="utf-8")  # newer but other project
 
-            _t.sleep(0.05)
-            noise.write_text('{"x":3}\n', encoding="utf-8")
+            # Claude layout
+            ckey = claude_project_keys(project)[0]
+            c_target = home / ".claude" / "projects" / ckey / "abc-uuid.jsonl"
+            c_target.parent.mkdir(parents=True)
+            c_target.write_text('{"c":1}\n', encoding="utf-8")
 
-            with mock.patch("core.paths.Path.home", return_value=home):
-                found = find_latest_session(
+            # Kimi layout (project name in dir)
+            k_target = (
+                home
+                / ".kimi-code"
+                / "sessions"
+                / f"wd_{project.name}_hash"
+                / "session_k1"
+                / "agents"
+                / "main"
+                / "wire.jsonl"
+            )
+            k_target.parent.mkdir(parents=True)
+            k_target.write_text('{"k":1}\n', encoding="utf-8")
+
+            with mock.patch("core.session_discover._home", return_value=home), mock.patch(
+                "core.paths.discover_sd_root", return_value=None
+            ):
+                rows_g = find_sessions(
+                    agent="grok", scope="current", limit=5, project=project, home=home
+                )
+                rows_c = find_sessions(
+                    agent="claude", scope="current", limit=5, project=project, home=home
+                )
+                rows_k = find_sessions(
+                    agent="kimi_code", scope="current", limit=5, project=project, home=home
+                )
+                rows_x = find_sessions(
+                    agent="cross", scope="current", limit=10, project=project, home=home
+                )
+                info = resolve_latest("grok", project=project, home=home)
+                # find_latest uses native which uses Path.home internally via _home
+                info2 = find_latest_session_info(
+                    "claude", project=project, allow_global_fallback=False
+                )
+
+            self.assertEqual(len(rows_g), 1)
+            self.assertTrue(rows_g[0]["path"].endswith("chat_history.jsonl"))
+            self.assertEqual(rows_g[0]["source"], "native")
+            self.assertEqual(len(rows_c), 1)
+            self.assertEqual(rows_c[0]["agent"], "claude")
+            self.assertGreaterEqual(len(rows_k), 1)
+            agents = {r["agent"] for r in rows_x}
+            self.assertIn("grok", agents)
+            self.assertIn("claude", agents)
+            self.assertIsNotNone(info)
+            self.assertEqual(info["source"], "native")
+            # find_latest_session_info uses real home for native_resolve which calls _home
+            # patch session_discover path through find_latest - may miss if not patched on resolve
+            # re-run find_latest with patched _home
+            with mock.patch("core.session_discover._home", return_value=home), mock.patch(
+                "core.paths.discover_sd_root", return_value=None
+            ):
+                info3 = find_latest_session_info(
                     "grok", project=project, allow_global_fallback=False
                 )
-            self.assertIsNotNone(found)
-            # macOS may resolve /var vs /private/var — compare by samefile
-            self.assertTrue(found.is_file())
-            self.assertTrue(target.is_file())
-            self.assertEqual(found.stat().st_ino, target.resolve().stat().st_ino)
+            self.assertIsNotNone(info3)
+            self.assertEqual(info3["source"], "native")
+            self.assertEqual(info3["path"].stat().st_ino, g_target.resolve().stat().st_ino)
 
     def test_find_explicit_and_env(self):
         from core.paths import find_latest_session
@@ -258,6 +314,106 @@ class TestPathsSessionDiscovery(unittest.TestCase):
             cmd_bad = portable_file_token_verify(p, "MISSING")
             r2 = subprocess.run(cmd_bad, shell=True, capture_output=True, text=True)
             self.assertNotEqual(r2.returncode, 0)
+
+
+class TestEnvMapWorkspace(unittest.TestCase):
+    """Environment ↔ workspace mapping without session-digger."""
+
+    def test_two_projects_map_to_different_env_dirs(self):
+        from core.env_map import map_workspace, project_keys_for_env, scan_environments
+        from urllib.parse import quote
+
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            app_a = Path(td) / "ws" / "AppA"
+            app_b = Path(td) / "ws" / "AppB"
+            app_a.mkdir(parents=True)
+            app_b.mkdir(parents=True)
+
+            # plant Claude + Grok layouts for both projects
+            for proj in (app_a, app_b):
+                gkey = quote(str(proj.resolve()), safe="")
+                ckey = project_keys_for_env("claude", proj)[0]
+                g = home / ".grok" / "sessions" / gkey / "s1" / "chat_history.jsonl"
+                c = home / ".claude" / "projects" / ckey / "sess.jsonl"
+                g.parent.mkdir(parents=True)
+                c.parent.mkdir(parents=True)
+                g.write_text("{}\n", encoding="utf-8")
+                c.write_text("{}\n", encoding="utf-8")
+
+            scan = scan_environments(home=home)
+            present = {e.env_id for e in scan if e.present}
+            self.assertIn("claude", present)
+            self.assertIn("grok", present)
+
+            ma = map_workspace(app_a, home=home)
+            mb = map_workspace(app_b, home=home)
+            self.assertGreaterEqual(ma["bound_count"], 2)
+            self.assertGreaterEqual(mb["bound_count"], 2)
+            # dirs must differ between projects
+            dirs_a = {
+                e["env_id"]: e["project_dirs"]
+                for e in ma["environments"]
+                if e["bound"]
+            }
+            dirs_b = {
+                e["env_id"]: e["project_dirs"]
+                for e in mb["environments"]
+                if e["bound"]
+            }
+            self.assertNotEqual(dirs_a.get("grok"), dirs_b.get("grok"))
+            self.assertNotEqual(dirs_a.get("claude"), dirs_b.get("claude"))
+
+    def test_live_workspace_and_cli(self):
+        from core.env_map import map_workspace
+        import subprocess
+
+        proj = Path.home() / "Documents" / "GPT"
+        if not proj.is_dir():
+            self.skipTest("no GPT workspace")
+        rep = map_workspace(proj)
+        self.assertEqual(rep["schema"], "agent-relay/workspace-map/v1")
+        self.assertIn("environments", rep)
+        # at least one bound env on this machine for GPT
+        self.assertGreaterEqual(rep["bound_count"], 1)
+        cli = Path(__file__).resolve().parents[1] / "scripts" / "relay_cli.py"
+        p = subprocess.run(
+            [sys.executable, str(cli), "workspace", "--project", str(proj), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        data = json.loads(p.stdout)
+        self.assertGreaterEqual(data.get("bound_count", 0), 1)
+
+    def test_native_list_and_resolve_no_digger_required(self):
+        from core.evidence import list_sessions, resolve_session
+        from core.paths import find_latest_session_info
+        from unittest import mock
+
+        proj = Path.home() / "Documents" / "GPT"
+        if not proj.is_dir():
+            proj = Path.cwd()
+
+        with mock.patch("core.evidence.discover_sd_root", return_value=None), mock.patch(
+            "core.paths.discover_sd_root", return_value=None
+        ):
+            rows = list_sessions("cross", limit=5, scope="current", cwd=proj, prefer_native=True)
+            self.assertIsInstance(rows, list)
+            for r in rows:
+                self.assertEqual(r.get("source"), "native")
+                self.assertTrue(Path(r["path"]).is_file(), r["path"])
+            info = find_latest_session_info(
+                "grok", project=proj, allow_global_fallback=True, prefer_digger=False
+            )
+            if info:
+                self.assertEqual(info["source"], "native")
+                self.assertTrue(Path(info["path"]).is_file())
+            if rows:
+                resolved = resolve_session(peer="auto", cwd=proj)
+                self.assertTrue(Path(resolved["path"]).is_file())
+                self.assertIn(resolved.get("source"), ("native", "explicit"))
 
 
 if __name__ == "__main__":

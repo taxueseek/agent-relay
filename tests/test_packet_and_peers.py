@@ -174,5 +174,91 @@ class TestSynthesize(unittest.TestCase):
         self.assertEqual(r["recommended_peer"], "kimi_code")
 
 
+class TestPathsSessionDiscovery(unittest.TestCase):
+    def test_grok_project_keys_stable(self):
+        from core.paths import grok_project_keys
+        from urllib.parse import unquote
+
+        with tempfile.TemporaryDirectory() as td:
+            proj = Path(td) / "MyProject"
+            proj.mkdir()
+            keys = grok_project_keys(proj)
+            self.assertTrue(keys)
+            decoded = unquote(keys[0])
+            self.assertIn("MyProject", decoded)
+
+    def test_find_latest_session_scoped(self):
+        from core.paths import find_latest_session, grok_project_keys
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            project = Path(td) / "work" / "app"
+            project.mkdir(parents=True)
+            other = Path(td) / "work" / "other"
+            other.mkdir(parents=True)
+
+            base = home / ".grok" / "sessions"
+            key_proj = grok_project_keys(project)[0]
+            key_other = grok_project_keys(other)[0]
+            (base / key_proj / "sess-a").mkdir(parents=True)
+            (base / key_other / "sess-b").mkdir(parents=True)
+            target = base / key_proj / "sess-a" / "chat_history.jsonl"
+            noise = base / key_other / "sess-b" / "chat_history.jsonl"
+            target.write_text('{"x":1}\n', encoding="utf-8")
+            noise.write_text('{"x":2}\n', encoding="utf-8")
+            # make noise newer — scoped lookup must still pick project
+            import time as _t
+
+            _t.sleep(0.05)
+            noise.write_text('{"x":3}\n', encoding="utf-8")
+
+            with mock.patch("core.paths.Path.home", return_value=home):
+                found = find_latest_session(
+                    "grok", project=project, allow_global_fallback=False
+                )
+            self.assertIsNotNone(found)
+            # macOS may resolve /var vs /private/var — compare by samefile
+            self.assertTrue(found.is_file())
+            self.assertTrue(target.is_file())
+            self.assertEqual(found.stat().st_ino, target.resolve().stat().st_ino)
+
+    def test_find_explicit_and_env(self):
+        from core.paths import find_latest_session
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "chat_history.jsonl"
+            f.write_text("x\n", encoding="utf-8")
+            self.assertEqual(
+                find_latest_session("grok", explicit=f).resolve(), f.resolve()
+            )
+            old = os.environ.get("AGENT_RELAY_EVAL_SESSION")
+            try:
+                os.environ["AGENT_RELAY_EVAL_SESSION"] = str(f)
+                self.assertEqual(
+                    find_latest_session("grok", project=Path(td)).resolve(), f.resolve()
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("AGENT_RELAY_EVAL_SESSION", None)
+                else:
+                    os.environ["AGENT_RELAY_EVAL_SESSION"] = old
+
+    def test_portable_verify_cmd(self):
+        from core.paths import portable_file_token_verify
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "proof.md"
+            p.write_text("hello TOKEN123 wave\n", encoding="utf-8")
+            cmd = portable_file_token_verify(p, "TOKEN123")
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cmd_bad = portable_file_token_verify(p, "MISSING")
+            r2 = subprocess.run(cmd_bad, shell=True, capture_output=True, text=True)
+            self.assertNotEqual(r2.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

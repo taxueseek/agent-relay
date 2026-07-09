@@ -26,19 +26,35 @@ def extract_verify_cmd(goal: str, explicit: str = "") -> str:
     m = _VERIFY_RE.search(goal or "")
     if m:
         return m.group(1).strip()
-    # heuristic: file path + TOKEN in goal → build grep check
+    # heuristic: file path + TOKEN in goal → portable Python check (mac/linux/win)
     token_m = re.search(r"(TOKEN[=:：]\s*|token[=:：]\s*)([A-Za-z0-9_.-]+)", goal or "", re.I)
     path_m = re.search(
-        r"((?:/Users|/home|~)[^\s]+?\.(?:md|py|txt|json)|docs/[^\s]+?\.(?:md|py|txt))",
+        r"("
+        r"(?:/Users|/home|/tmp|~|[A-Za-z]:[\\/])[^\s]+?\.(?:md|py|txt|json)|"
+        r"docs/[^\s]+?\.(?:md|py|txt|json)|"
+        r"\.relay/[^\s]+?\.(?:md|py|txt|json)"
+        r")",
         goal or "",
     )
     if token_m and path_m:
         tok = token_m.group(2)
         path = path_m.group(1)
-        return f"test -f {path} && rg -q {json.dumps(tok)} {path}"
+        try:
+            from core.paths import portable_file_token_verify
+
+            return portable_file_token_verify(path, tok)
+        except Exception:
+            return f"test -f {path} && rg -q {json.dumps(tok)} {path}"
     if path_m and re.search(r"(存在|写|Write|创建)", goal or "", re.I):
         path = path_m.group(1)
-        return f"test -f {path}"
+        # pathlib exists check via python — no Unix test binary required
+        import sys as _sys
+
+        code = (
+            "from pathlib import Path; "
+            f"raise SystemExit(0 if Path({json.dumps(path)}).is_file() else 1)"
+        )
+        return f"{_sys.executable} -c {json.dumps(code)}"
     return ""
 
 

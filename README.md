@@ -2,9 +2,9 @@
 
 > 跨产品 Agent 任务接力与委派。用证据包交接上下文，而不是粘贴整段聊天记录。
 
-额度用完、上下文压扁、换工具继续时，把「目标 + 关键文件 + 下一步」打成可验收的 packet，交给另一个 Agent 续跑或委派执行。灵感来自 [session-digger](https://github.com/taxueseek/session-digger) 的跨环境会话证据层：digger 负责考古与检索，relay 负责 pack / resume / 委派。
+额度用完、上下文压扁、换工具继续时，把「目标 + 关键文件 + 下一步」打成可验收的数据，交给另一个 Agent 续跑或委派执行。灵感来自 [session-digger](https://github.com/taxueseek/session-digger) 的跨环境会话证据层：digger 负责考古与检索，relay 负责 pack / resume / 委派。
 
-零依赖，Python 3.8+，clone 即用。
+
 
 ---
 

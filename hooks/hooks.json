@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/relay_cli.py\" pack --from claude --goal \"pre-compact auto pack\" || true"
+          }
+        ]
+      }
+    ]
+  },
+  "_comment": "启用前请确认 CLAUDE_PLUGIN_ROOT 或改为绝对 skill 路径。本期默认不自动安装到用户 settings。"
+}

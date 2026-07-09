@@ -1,0 +1,20 @@
+{
+  "name": "agent-relay",
+  "version": "0.1.2",
+  "description": "跨产品 Agent 任务接力与委派：pack/resume/handoff/delegate，对接 session-digger，支持 Claude/Grok/Kimi Code 等",
+  "author": {
+    "name": "taxueseek"
+  },
+  "keywords": [
+    "handoff",
+    "multi-agent",
+    "relay",
+    "session-digger",
+    "claude",
+    "grok",
+    "kimi",
+    "delegate",
+    "continuity"
+  ],
+  "skills": "./"
+}
